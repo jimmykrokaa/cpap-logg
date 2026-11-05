@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="nb">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>CPAP-logg</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/extras.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>CPAP-logg</h1>
+      <p class="lead" id="status">Laster …</p>
+    </div>
+    <div class="top-actions" id="topActions" hidden>
+      <div class="seg" role="group" aria-label="Visning" id="viewSeg">
+        <button type="button" data-view="enkel">Enkel</button>
+        <button type="button" data-view="avansert">Avansert</button>
+        <button type="button" data-view="egen">Egendefinert</button>
+      </div>
+      <button class="btn" id="customize" type="button" hidden>Tilpass</button>
+      <button class="btn" id="tidBtn" type="button">Klokke</button>
+      <button class="btn primary" id="uploadBtn" type="button">Last opp</button>
+      <button class="btn" id="logout" type="button">Logg ut</button>
+    </div>
+  </header>
+
+  <section class="card login" id="loginCard" hidden>
+    <h2>Logg inn</h2>
+    <p class="note" style="margin:0">Skriv passordet for å se CPAP-dataene.</p>
+    <form id="loginForm" class="import-row">
+      <label class="sr" for="pw">Passord</label>
+      <input type="password" id="pw" autocomplete="current-password" placeholder="Passord" required>
+      <button class="btn primary" type="submit">Logg inn</button>
+    </form>
+    <div class="msg" id="loginMsg" role="status"></div>
+  </section>
+
+  <section class="card layout-panel" id="layoutPanel" hidden>
+    <div class="section-head">
+      <div>
+        <h2>Tilpass egendefinert visning</h2>
+        <p class="note" style="margin:2px 0 0">Kryss av modulene du vil se, og endre rekkefølgen med pilene. Oppsettet lagres og gjelder på alle enhetene dine.</p>
+      </div>
+      <div class="import-row">
+        <button class="btn" type="button" id="layoutCancel">Avbryt</button>
+        <button class="btn primary" type="button" id="layoutSave">Lagre</button>
+      </div>
+    </div>
+    <div class="layout-cols">
+      <div><h3 style="font-size:.95rem; margin-bottom:6px">Periode</h3><ul class="layout-list" id="layoutPeriode"></ul></div>
+      <div><h3 style="font-size:.95rem; margin-bottom:6px">Natt</h3><ul class="layout-list" id="layoutNatt"></ul></div>
+    </div>
+    <div class="msg" id="layoutMsg" role="status"></div>
+  </section>
+
+
+  <section class="card empty" id="emptyState" hidden>
+    <strong>Ingen netter ennå</strong>
+    <p style="margin:0 0 14px">Last opp SD-kortet fra AirSense-maskinen for å komme i gang.</p>
+    <button class="btn primary" id="emptyUpload" type="button">Last opp</button>
+  </section>
+
+  <div id="main" hidden style="display:grid; gap:20px">
+    <section style="display:grid; gap:12px" id="nightSection">
+      <div class="night-head">
+        <div class="section-head">
+          <div class="left">
+            <h3 id="nightTitle">Natt</h3><button class="info" type="button" data-info="natt" aria-label="Forklaring: Natt">i</button>
+          </div>
+          <div class="night-nav">
+            <button class="btn icon" type="button" id="nightPrev" aria-label="Forrige natt">‹</button>
+            <label class="sr" for="nightSelect">Velg natt</label>
+            <select id="nightSelect"></select>
+            <button class="btn icon" type="button" id="nightNext" aria-label="Neste natt">›</button>
+          </div>
+        </div>
+        <div class="bar" id="zoomBar" hidden>
+          <span class="zoominfo" id="zoomInfo"></span>
+          <button class="btn small" type="button" id="zoomReset">Vis hele natta</button>
+        </div>
+        <p class="note" id="nightNote" style="margin:0"></p>
+      </div>
+      <div class="grid" id="nightMods"></div>
+    </section>
+
+    <section style="display:grid; gap:12px">
+      <div class="section-head">
+        <h3>Periode<button class="info" type="button" data-info="periode" aria-label="Forklaring: Periode">i</button></h3>
+        <div class="bar">
+          <div class="seg" role="group" aria-label="Periode" id="periodSeg">
+            <button type="button" data-days="7">7 dager</button>
+            <button type="button" data-days="30">30 dager</button>
+            <button type="button" data-days="90">90 dager</button>
+            <button type="button" data-days="0">Alt</button>
+          </div>
+          <span class="dates"><input type="date" id="from" aria-label="Fra dato"> – <input type="date" id="to" aria-label="Til dato"></span>
+          <span class="period" id="periodLabel"></span>
+        </div>
+      </div>
+      <div class="grid" id="periodMods"></div>
+    </section>
+  </div>
+</div>
+
+<dialog class="dlg" id="uploadDlg" aria-labelledby="uploadTitle">
+  <div class="dlg-head">
+    <h2 id="uploadTitle">Last opp fra SD-kortet</h2>
+    <button class="mod-remove" type="button" id="uploadClose" aria-label="Lukk">×</button>
+  </div>
+  <p class="note" style="margin:0">Sett SD-kortet fra AirSense-maskinen i datamaskinen og velg selve kortet eller mappen <b>DATALOG</b> på kortet. Appen sjekker hvilke netter som allerede er lastet opp, og sender bare netter som er nye eller har endret seg.</p>
+  <div class="import-row">
+    <label class="btn primary" for="dirInput">Velg mappe<input type="file" id="dirInput" webkitdirectory directory multiple></label>
+    <label class="btn" for="zipInput">Velg zip-fil<input type="file" id="zipInput" accept=".zip,application/zip"></label>
+  </div>
+  <div class="drop" id="drop">eller dra mappen eller zip-fila hit</div>
+  <p class="note" style="margin:0">På iPhone og iPad går det ikke å velge en mappe. Bruk en zip-fil der.</p>
+  <div class="progress" id="importProgress" hidden><i></i></div>
+  <div class="msg" id="importMsg" role="status" aria-live="polite"></div>
+</dialog>
+
+<dialog class="dlg" id="tidDlg" aria-labelledby="tidTitle">
+  <div class="dlg-head">
+    <h2 id="tidTitle">Maskinens klokke</h2>
+    <button class="mod-remove" type="button" id="tidClose" aria-label="Lukk">×</button>
+  </div>
+  <p class="note" style="margin:0">AirSense skriver klokkeslett uten tidssone, og maskinen bytter ikke alltid mellom sommer- og vintertid. Velg hvordan klokka på maskinen står, så regner appen om til norsk tid.</p>
+  <div style="display:grid; gap:8px">
+    <label class="chk"><input type="radio" name="tidmodus" value="fast"> Maskinen står fast på sommertid (UTC+2). Appen trekker fra en time om vinteren.</label>
+    <label class="chk"><input type="radio" name="tidmodus" value="oslo"> Maskinen følger norsk tid. Ingen justering.</label>
+    <label class="chk"><input type="radio" name="tidmodus" value="egen"> Fast forskyvning fra UTC:
+      <input type="number" id="tidTimer" min="-12" max="14" step="0.5" value="2" style="width:5rem; font:inherit; padding:3px 6px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--fg)"> timer</label>
+  </div>
+  <p class="note" style="margin:0" id="tidEksempel"></p>
+  <div class="import-row"><button class="btn primary" type="button" id="tidSave">Lagre</button><span class="msg" id="tidMsg" role="status"></span></div>
+</dialog>
+
+<script src="/edf.js"></script>
+<script src="/app.js"></script>
+<script src="/natt.js"></script>
+<script src="/tid.js"></script>
+<script src="/score.js"></script>
+<script src="/info.js"></script>
+<script src="/upload.js"></script>
+</body>
+</html>
