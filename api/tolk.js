@@ -1,4 +1,3 @@
-import { getVercelOidcToken } from '@vercel/oidc';
 import { requireLogin } from '../lib/auth.js';
 import { readStore, sortedNights } from '../lib/store.js';
 
@@ -82,8 +81,10 @@ export default async function handler(req, res) {
     prompt = periodPrompt(rows, fra, til);
   }
 
+  const token = process.env.AI_GATEWAY_API_KEY;
+  if (!token) return res.status(503).json({ error: 'AI er ikke satt opp. Legg inn miljøvariabelen AI_GATEWAY_API_KEY på Netlify.' });
+
   try {
-    const token = process.env.AI_GATEWAY_API_KEY || (await getVercelOidcToken());
     let lastStatus = 0;
     for (const model of MODELS) {
       const r = await fetch('https://ai-gateway.vercel.sh/v1/chat/completions', {
@@ -101,7 +102,7 @@ export default async function handler(req, res) {
       const detail = (await r.text()).slice(0, 300);
       console.error('AI Gateway', model, r.status, detail);
       if (r.status === 403 || r.status === 402) {
-        return res.status(502).json({ error: /credit card/i.test(detail) ? 'Vercel krever et betalingskort på kontoen for å bruke AI. Legg det til under AI i Vercel.' : 'AI-kvoten er brukt opp for nå, eller kontoen mangler tilgang. Prøv igjen senere.' });
+        return res.status(502).json({ error: /credit card/i.test(detail) ? 'Vercel krever et betalingskort på kontoen for å bruke AI. Legg det til under AI Gateway i Vercel.' : 'AI-kvoten er brukt opp for nå, eller kontoen mangler tilgang. Prøv igjen senere.' });
       }
       if (r.status === 429) return res.status(502).json({ error: 'For mange forespørsler akkurat nå. Prøv igjen om litt.' });
     }
