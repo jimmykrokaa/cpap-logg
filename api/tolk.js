@@ -1,8 +1,60 @@
 import { requireLogin } from '../lib/auth.js';
 import { readStore, sortedNights } from '../lib/store.js';
 
+// AI-kall går via Netlify AI Gateway. Netlify setter nøkler og adresser for Gemini, OpenAI og Anthropic
+// automatisk i funksjonene (krever en kredittbasert plan og minst én produksjonsdeploy).
 // Modeller prøves i rekkefølge: den første som svarer, brukes. Kan overstyres med AI_MODEL (kommaseparert).
-const MODELS = (process.env.AI_MODEL || 'google/gemini-2.5-flash-lite,openai/gpt-4o-mini,anthropic/claude-haiku-4.5').split(',').map((m) => m.trim()).filter(Boolean);
+const MODELS = (process.env.AI_MODEL || 'gemini-3.5-flash-lite,gpt-5.4-mini,claude-haiku-5-5').split(',').map((m) => m.trim()).filter(Boolean);
+const MAX_TOKENS = 4000;
+
+const provider = (model) => (/^gemini/.test(model) ? 'gemini' : /^claude/.test(model) ? 'anthropic' : 'openai');
+
+export function aiAvailable() {
+  return MODELS.some((m) => keyFor(provider(m)));
+}
+
+function keyFor(p) {
+  const env = process.env;
+  if (p === 'gemini') return env.GEMINI_API_KEY && env.GOOGLE_GEMINI_BASE_URL;
+  if (p === 'anthropic') return env.ANTHROPIC_API_KEY && env.ANTHROPIC_BASE_URL;
+  return env.OPENAI_API_KEY && env.OPENAI_BASE_URL;
+}
+
+const base = (v) => v.replace(/\/+$/, '');
+
+// Sender prompten til én modell. Gir { ok, status, tekst, detalj }.
+async function callModel(model, prompt) {
+  const env = process.env;
+  const p = provider(model);
+  let r;
+  if (p === 'gemini') {
+    r = await fetch(`${base(env.GOOGLE_GEMINI_BASE_URL)}/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: MAX_TOKENS } })
+    });
+  } else if (p === 'anthropic') {
+    r = await fetch(`${base(env.ANTHROPIC_BASE_URL)}/v1/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model, max_tokens: MAX_TOKENS, messages: [{ role: 'user', content: prompt }] })
+    });
+  } else {
+    r = await fetch(`${base(env.OPENAI_BASE_URL)}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}` },
+      body: JSON.stringify({ model, max_completion_tokens: MAX_TOKENS, messages: [{ role: 'user', content: prompt }] })
+    });
+  }
+  if (!r.ok) return { ok: false, status: r.status, detalj: (await r.text()).slice(0, 300) };
+  const d = await r.json();
+  let tekst = '';
+  if (p === 'gemini') tekst = (d.candidates?.[0]?.content?.parts || []).filter((x) => !x.thought).map((x) => x.text || '').join('');
+  else if (p === 'anthropic') tekst = (d.content || []).filter((x) => x.type === 'text').map((x) => x.text).join('');
+  else tekst = d.choices?.[0]?.message?.content || '';
+  return { ok: true, status: r.status, tekst: tekst.trim() };
+}
+
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 const f2 = (v) => (v == null ? '' : Number(v).toFixed(2));
 const COLS = ['dato', 'ahi', 'timer', 'sentrale', 'obstruktive', 'hypopneer', 'uklassifisert', 'oppvakninger', 'trykkSnitt', 'trykk90', 'trykkMaks',
@@ -81,32 +133,25 @@ export default async function handler(req, res) {
     prompt = periodPrompt(rows, fra, til);
   }
 
-  const token = process.env.AI_GATEWAY_API_KEY;
-  if (!token) return res.status(503).json({ error: 'AI er ikke satt opp. Legg inn miljøvariabelen AI_GATEWAY_API_KEY på Netlify.' });
+  const modeller = MODELS.filter((m) => keyFor(provider(m)));
+  if (!modeller.length) {
+    return res.status(503).json({ error: 'AI er ikke tilgjengelig ennå. Netlify AI Gateway krever en kredittbasert plan (også gratisplanen) og minst én produksjonsdeploy.' });
+  }
 
   try {
     let lastStatus = 0;
-    for (const model of MODELS) {
-      const r = await fetch('https://ai-gateway.vercel.sh/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ model, max_tokens: 1500, messages: [{ role: 'user', content: prompt }] })
-      });
+    for (const model of modeller) {
+      const r = await callModel(model, prompt);
       if (r.ok) {
-        const data = await r.json();
-        const text = data.choices?.[0]?.message?.content || '';
-        if (text) return res.json({ tekst: text, modell: model });
+        if (r.tekst) return res.json({ tekst: r.tekst, modell: model });
         continue;
       }
       lastStatus = r.status;
-      const detail = (await r.text()).slice(0, 300);
-      console.error('AI Gateway', model, r.status, detail);
-      if (r.status === 403 || r.status === 402) {
-        return res.status(502).json({ error: /credit card/i.test(detail) ? 'Vercel krever et betalingskort på kontoen for å bruke AI. Legg det til under AI Gateway i Vercel.' : 'AI-kvoten er brukt opp for nå, eller kontoen mangler tilgang. Prøv igjen senere.' });
-      }
-      if (r.status === 429) return res.status(502).json({ error: 'For mange forespørsler akkurat nå. Prøv igjen om litt.' });
+      console.error('AI Gateway', model, r.status, r.detalj);
+      if (r.status === 429) return res.status(502).json({ error: 'For mange forespørsler, eller AI-kvoten på Netlify er brukt opp for nå. Prøv igjen om litt.' });
+      if (r.status === 402) return res.status(502).json({ error: 'Netlify-kontoen er tom for kreditter til AI. Sjekk kreditter under Billing i Netlify.' });
     }
-    res.status(502).json({ error: `AI-tjenesten svarte ikke som forventet (${lastStatus || 'ingen svar'}).` });
+    res.status(502).json({ error: `AI-tjenesten svarte ikke som forventet (${lastStatus || 'tomt svar'}).` });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Tolkningen feilet.' });
